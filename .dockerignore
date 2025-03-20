@@ -1,0 +1,11 @@
+.cache
+public
+build
+dist
+.dockerignore
+Dockerfile
+Dockerfile.dev
+Dockerfile.prod
+.vscode
+bin
+pkg

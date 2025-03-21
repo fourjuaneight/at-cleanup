@@ -20,6 +20,7 @@ import (
 	"github.com/bluesky-social/indigo/repo"
 	"github.com/bluesky-social/indigo/xrpc"
 	"github.com/ericvolp12/bsky-experiments/pkg/consumer/store/store_queries"
+	"github.com/ericvolp12/bsky-experiments/pkg/usercount"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/ipfs/go-cid"
@@ -27,6 +28,22 @@ import (
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/time/rate"
 )
+
+type API struct {
+	UserCount *usercount.UserCount
+
+	Store     *store.Store
+	Directory identity.Directory
+
+	StatsCacheTTL   time.Duration
+	StatsCache      *StatsCacheEntry
+	StatsCacheRWMux *sync.RWMutex
+
+	CheckoutLimiter *rate.Limiter
+	MagicHeaderVal  string
+
+	Bitmapper *consumer.Bitmapper
+}
 
 type CleanupOldRecordsRequest struct {
 	Identifier          string   `json:"identifier"`
@@ -36,7 +53,7 @@ type CleanupOldRecordsRequest struct {
 	ActuallyDeleteStuff bool     `json:"actually_delete_stuff"`
 }
 
-var cleanupUserAgent = "jaz-repo-cleanup-tool/0.0.1"
+var cleanupUserAgent = "jaz-repo-cleanup-tool/1.0.0"
 
 func (api *API) CleanupOldRecords(c *gin.Context) {
 	ctx := c.Request.Context()

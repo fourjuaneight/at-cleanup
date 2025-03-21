@@ -149,7 +149,7 @@ func deleteRecords(ctx context.Context, client xrpc.Client, records []string, ra
 	return nil
 }
 
-func runCleanup(ctx context.Context, did, appPassword string, cleanupTypes []string, daysAgo int, actuallyDeleteStuff bool, rateLimit int, burstLimit int) error {
+func runCleanup(ctx context.Context, did, appPassword string, cleanupTypes []string, daysAgo int, rateLimit int, burstLimit int) error {
 	log.Println("Starting cleanup...")
 
 	client := xrpc.Client{
@@ -259,16 +259,12 @@ func runCleanup(ctx context.Context, did, appPassword string, cleanupTypes []str
 
 	log.Printf("Found %d records to delete.", len(recordsToDelete))
 
-	if actuallyDeleteStuff {
-		err = deleteRecords(ctx, client, recordsToDelete, rateLimit, burstLimit)
-		if err != nil {
-			return fmt.Errorf("error during record deletion: %w", err)
-		}
-
-		log.Println("Deletion process completed.")
-	} else {
-		log.Println("Dry Run: No records were deleted.")
+	err = deleteRecords(ctx, client, recordsToDelete, rateLimit, burstLimit)
+	if err != nil {
+		return fmt.Errorf("error during record deletion: %w", err)
 	}
+
+	log.Println("Deletion process completed.")
 
 	return nil
 }
@@ -276,7 +272,6 @@ func runCleanup(ctx context.Context, did, appPassword string, cleanupTypes []str
 func main() {
 	var did, appPassword, cleanupTypes string
 	var daysAgo, rateLimit, burstLimit int
-	var dryRun bool
 
 	app := &cli.App{
 		Name:    "at-cleanup",
@@ -307,12 +302,6 @@ func main() {
 				Usage:       "Delete records older than this many days",
 				Destination: &daysAgo,
 			},
-			&cli.BoolFlag{
-				Name:        "dry-run",
-				Value:       true,
-				Usage:       "Whether to actually delete records or perform a dry run",
-				Destination: &dryRun,
-			},
 			&cli.IntFlag{
 				Name:        "rate-limit",
 				Value:       4,
@@ -327,7 +316,7 @@ func main() {
 			},
 		},
 		Action: func(c *cli.Context) error {
-			return runCleanup(context.Background(), did, appPassword, strings.Split(cleanupTypes, ","), daysAgo, !dryRun, rateLimit, burstLimit)
+			return runCleanup(context.Background(), did, appPassword, strings.Split(cleanupTypes, ","), daysAgo, rateLimit, burstLimit)
 		},
 	}
 

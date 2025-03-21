@@ -6,12 +6,25 @@ Directly taken from [Jaz's](https://bsky.app/profile/jaz.bsky.social) [bsky-expe
 
 ## Install
 
+There are 3 ways to run the script:
+
+### Gorun
 ```sh
-go mod download
+make run
+# script should run from root of repo
+./atCleanup.go
 ```
 
-## Use
-
+### Local Binary
 ```sh
-go run . serve
+make build
+# binary should be accessible from root of repo
+./atCleanup
+```
+
+### GOPATH Binary
+```sh
+make install
+# binary should be accessible from anywhere
+atCleanup
 ```

@@ -7,12 +7,9 @@ permissions:
   deployments: write
   id-token: write
 
-env:
-  GO_VERSION: '^1.13.1'
-
 jobs:
   build:
-    name: Build Site
+    name: Run Cleanup
     runs-on: ubuntu-20.04
     steps:
       - name: Checkout Repo
@@ -24,7 +21,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v5
         with:
-          go-version: $GO_VERSION
+          go-version: '^1.13.1'
 
       - name: Build Binary
         run: go build atCleanup.go

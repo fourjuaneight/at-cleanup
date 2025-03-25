@@ -18,8 +18,8 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/bluesky-social/indigo/repo"
 	"github.com/bluesky-social/indigo/xrpc"
-	"github.com/urfave/cli/v2"
 	"github.com/ipfs/go-cid"
+	"github.com/urfave/cli/v2"
 	"golang.org/x/time/rate"
 )
 
@@ -35,19 +35,22 @@ func (i IdentityDirectory) PDSEndpoint() string {
 
 // userDirectoryLookup queries user directory for a given DID
 func userDirectoryLookup(did string) (IdentityDirectory, error) {
-	const directoryServiceURL = "https://pds-directory.example.com/query?"
+	const directoryServiceURL = "https://plc.directory/"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Set up a context with a timeout
-	defer cancel() // Ensure the context is canceled on function exit to free up resources
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
 	// Construct URL for DID lookup
-	url := fmt.Sprintf("%sdid=%s", directoryServiceURL, did)
+	url := directoryServiceURL + did
 
 	// Create an HTTP GET request with context
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return IdentityDirectory{}, fmt.Errorf("error creating HTTP request for DID lookup: %w", err)
 	}
+
+	// Set proper Accept header for DID resolution
+	req.Header.Set("Accept", "application/did+ld+json")
 
 	// Perform the HTTP request
 	resp, err := http.DefaultClient.Do(req)
@@ -61,13 +64,25 @@ func userDirectoryLookup(did string) (IdentityDirectory, error) {
 		return IdentityDirectory{}, fmt.Errorf("received non-OK HTTP status from DID lookup: %s", resp.Status)
 	}
 
-	// Decode the JSON response to IdentityDirectory struct
-	var identDir IdentityDirectory
-	if err := json.NewDecoder(resp.Body).Decode(&identDir); err != nil {
+	// PLC directory returns a different structure than expected
+	var plcResponse struct {
+		Service []map[string]any `json:"service"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&plcResponse); err != nil {
 		return IdentityDirectory{}, fmt.Errorf("error decoding JSON response from DID lookup: %w", err)
 	}
 
-	return identDir, nil
+	// Extract the PDS URL from the service array
+	for _, service := range plcResponse.Service {
+		if typeVal, ok := service["type"].(string); ok && typeVal == "AtprotoPersonalDataServer" {
+			if endpoint, ok := service["serviceEndpoint"].(string); ok {
+				return IdentityDirectory{PDSEndpointURL: endpoint}, nil
+			}
+		}
+	}
+
+	return IdentityDirectory{}, fmt.Errorf("could not find PDS endpoint in PLC directory response")
 }
 
 // parseRecordCreatedAt parses the creation date of a given record
@@ -80,6 +95,8 @@ func parseRecordCreatedAt(record interface{}) (time.Time, error) {
 		return dateparse.ParseAny(rec.CreatedAt)
 	case *bsky.FeedLike:
 		return dateparse.ParseAny(rec.CreatedAt)
+	case *bsky.GraphBlock:
+		return dateparse.ParseAny(rec.CreatedAt)
 	default:
 		// Return an error for unknown record types
 		return time.Time{}, fmt.Errorf("unknown record type for createdAt parsing: %T", rec)
@@ -87,9 +104,7 @@ func parseRecordCreatedAt(record interface{}) (time.Time, error) {
 }
 
 // deleteRecords deletes batches of records based on rate limitations
-func deleteRecords(ctx context.Context, client xrpc.Client, records []string, rateLimit int, burstLimit int) error {
-	const maxDeletesPerHour = 4000
-
+func deleteRecords(ctx context.Context, client xrpc.Client, repo string, records []string, rateLimit int, burstLimit int) error {
 	// Create a rate limiter with specified rate and burst limits
 	limiter := rate.NewLimiter(rate.Limit(rateLimit), burstLimit)
 	var wg sync.WaitGroup // WaitGroup to synchronize goroutines
@@ -129,6 +144,7 @@ func deleteRecords(ctx context.Context, client xrpc.Client, records []string, ra
 			}
 
 			deleteBatch := &comatproto.RepoApplyWrites_Input{
+				Repo:   repo, // Include the repository identifier (DID)
 				Writes: []*comatproto.RepoApplyWrites_Input_Writes_Elem{},
 			}
 
@@ -171,6 +187,7 @@ func deleteRecords(ctx context.Context, client xrpc.Client, records []string, ra
 
 // runCleanup orchestrates the overall cleanup process for the specified parameters
 func runCleanup(ctx context.Context, did, appPassword string, cleanupTypes []string, daysAgo int, rateLimit int, burstLimit int) error {
+	// log did
 	log.Println("Starting cleanup...")
 
 	client := xrpc.Client{
@@ -223,7 +240,7 @@ func runCleanup(ctx context.Context, did, appPassword string, cleanupTypes []str
 	}
 
 	var recordsToDelete []string // Slice to hold paths of records to delete
-	lk := sync.Mutex{} // Mutex to handle concurrent access to recordsToDelete
+	lk := sync.Mutex{}           // Mutex to handle concurrent access to recordsToDelete
 
 	// Function to check if a slice contains a specific item
 	contains := func(slice []string, item string) bool {
@@ -235,10 +252,15 @@ func runCleanup(ctx context.Context, did, appPassword string, cleanupTypes []str
 		return false
 	}
 
-	// Iterate over records in the repository
-	err = rr.ForEach(ctx, "app.bsky.feed.", func(path string, nodeCid cid.Cid) error {
-		// Skip paths containing "threadgate"
+	// In the runCleanup function, replace the existing ForEach with:
+	err = rr.ForEach(ctx, "", func(path string, nodeCid cid.Cid) error {
+		// Skip paths containing "threadgate" or that don't match our target collections
 		if strings.Contains(path, "threadgate") {
+			return nil
+		}
+
+		// Check if the path is for a record type we want to process
+		if !strings.HasPrefix(path, "app.bsky.feed.") && !strings.HasPrefix(path, "app.bsky.graph.block") {
 			return nil
 		}
 
@@ -276,6 +298,10 @@ func runCleanup(ctx context.Context, did, appPassword string, cleanupTypes []str
 			if contains(cleanupTypes, "like") {
 				isEligible = true
 			}
+		case *bsky.GraphBlock:
+			if contains(cleanupTypes, "block") {
+				isEligible = true
+			}
 		}
 
 		// If eligible, add the path to recordsToDelete
@@ -294,7 +320,7 @@ func runCleanup(ctx context.Context, did, appPassword string, cleanupTypes []str
 	log.Printf("Found %d records to delete.", len(recordsToDelete))
 
 	// Delete the identified records
-	err = deleteRecords(ctx, client, recordsToDelete, rateLimit, burstLimit)
+	err = deleteRecords(ctx, client, out.Did, recordsToDelete, rateLimit, burstLimit)
 	if err != nil {
 		return fmt.Errorf("error during record deletion: %w", err)
 	}

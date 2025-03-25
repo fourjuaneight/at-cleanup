@@ -27,7 +27,7 @@ jobs:
         run: go build atCleanup.go
 
       - name: Cleanup UY
-        run: ./atCleanup --did=$DID --password=$PASS --types=post,repost,like --days=20 --rate-limit=4 --burst-limit=1
+        run: ./atCleanup --did="$DID" --password="$PASS" --types=post,repost,like --days=20 --rate-limit=4 --burst-limit=1
         env:
           DID: ${{ vars.UY_DID }}
           PASS: ${{ vars.UY_PASS }}

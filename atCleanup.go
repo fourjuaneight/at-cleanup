@@ -23,6 +23,14 @@ import (
 	"golang.org/x/time/rate"
 )
 
+const (
+	directoryServiceURL = "https://plc.directory/"
+	defaultBatchSize    = 10
+	clientTimeout       = 5 * time.Minute
+	defaultAPIHost      = "https://bsky.social"
+	lookupTimeout       = 10 * time.Second
+)
+
 // IdentityDirectory holds the PDS endpoint URL
 type IdentityDirectory struct {
 	PDSEndpointURL string `json:"pds_url"`
@@ -33,38 +41,51 @@ func (i IdentityDirectory) PDSEndpoint() string {
 	return i.PDSEndpointURL
 }
 
+// RecordType represents supported record types for cleanup
+type RecordType string
+
+const (
+	Post   RecordType = "post"
+	Repost RecordType = "repost"
+	Like   RecordType = "like"
+	Block  RecordType = "block"
+)
+
+// CleanupConfig holds configuration for the cleanup operation
+type CleanupConfig struct {
+	DID         string
+	AppPassword string
+	Types       []string
+	DaysAgo     int
+	RateLimit   int
+	BurstLimit  int
+}
+
 // userDirectoryLookup queries user directory for a given DID
 func userDirectoryLookup(did string) (IdentityDirectory, error) {
-	const directoryServiceURL = "https://plc.directory/"
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
 	defer cancel()
 
 	// Construct URL for DID lookup
 	url := directoryServiceURL + did
 
-	// Create an HTTP GET request with context
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return IdentityDirectory{}, fmt.Errorf("error creating HTTP request for DID lookup: %w", err)
 	}
 
-	// Set proper Accept header for DID resolution
 	req.Header.Set("Accept", "application/did+ld+json")
 
-	// Perform the HTTP request
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return IdentityDirectory{}, fmt.Errorf("error performing HTTP request for DID lookup: %w", err)
 	}
-	defer resp.Body.Close() // Ensure the response body is closed after reading
+	defer resp.Body.Close()
 
-	// Check for non-OK HTTP status
 	if resp.StatusCode != http.StatusOK {
 		return IdentityDirectory{}, fmt.Errorf("received non-OK HTTP status from DID lookup: %s", resp.Status)
 	}
 
-	// PLC directory returns a different structure than expected
 	var plcResponse struct {
 		Service []map[string]any `json:"service"`
 	}
@@ -73,7 +94,6 @@ func userDirectoryLookup(did string) (IdentityDirectory, error) {
 		return IdentityDirectory{}, fmt.Errorf("error decoding JSON response from DID lookup: %w", err)
 	}
 
-	// Extract the PDS URL from the service array
 	for _, service := range plcResponse.Service {
 		if typeVal, ok := service["type"].(string); ok && typeVal == "AtprotoPersonalDataServer" {
 			if endpoint, ok := service["serviceEndpoint"].(string); ok {
@@ -87,127 +107,140 @@ func userDirectoryLookup(did string) (IdentityDirectory, error) {
 
 // parseRecordCreatedAt parses the creation date of a given record
 func parseRecordCreatedAt(record interface{}) (time.Time, error) {
-	// Handle different record types separately
+	var createdAt string
+
 	switch rec := record.(type) {
 	case *bsky.FeedPost:
-		return dateparse.ParseAny(rec.CreatedAt)
+		createdAt = rec.CreatedAt
 	case *bsky.FeedRepost:
-		return dateparse.ParseAny(rec.CreatedAt)
+		createdAt = rec.CreatedAt
 	case *bsky.FeedLike:
-		return dateparse.ParseAny(rec.CreatedAt)
+		createdAt = rec.CreatedAt
 	case *bsky.GraphBlock:
-		return dateparse.ParseAny(rec.CreatedAt)
+		createdAt = rec.CreatedAt
 	default:
-		// Return an error for unknown record types
 		return time.Time{}, fmt.Errorf("unknown record type for createdAt parsing: %T", rec)
 	}
+
+	return dateparse.ParseAny(createdAt)
 }
 
 // deleteRecords deletes batches of records based on rate limitations
-func deleteRecords(ctx context.Context, client xrpc.Client, repo string, records []string, rateLimit int, burstLimit int) error {
-	// Create a rate limiter with specified rate and burst limits
+func deleteRecords(ctx context.Context, client xrpc.Client, repo string, records []string, rateLimit, burstLimit int) error {
+	if len(records) == 0 {
+		return nil
+	}
+
 	limiter := rate.NewLimiter(rate.Limit(rateLimit), burstLimit)
-	var wg sync.WaitGroup // WaitGroup to synchronize goroutines
-	var numDeleted int
-
-	// Function to define the batch size for deletes
-	batchSize := func() int {
-		// Define batch size
-		return 10 // Customize as needed
-	}()
-
-	// Channel to distribute record batches
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var totalDeleted int
+	errChan := make(chan error, 1)
+	
+	batchSize := defaultBatchSize
 	recordChan := make(chan []string)
 
+	// Producer: Send record batches to channel
 	go func() {
-		defer close(recordChan) // Close the channel when done
-		// Iterate over records and send batches to the channel
-		for start := 0; start < len(records); start += batchSize {
-			end := start + batchSize
+		defer close(recordChan)
+		for i := 0; i < len(records); i += batchSize {
+			end := i + batchSize
 			if end > len(records) {
 				end = len(records)
 			}
-			recordChan <- records[start:end]
+			recordChan <- records[i:end]
 		}
 	}()
 
-	// Range over batches from the channel
-	for batch := range recordChan {
-		wg.Add(1) // Increment WaitGroup counter
-		go func(batch []string) {
-			defer wg.Done() // Decrement counter when done
+	// Consumer: Process batches from channel
+	for i := 0; i < burstLimit; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			
+			for batch := range recordChan {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
 
-			// Wait for the rate limiter to allow the next request
-			if err := limiter.Wait(ctx); err != nil {
-				log.Printf("Rate limit error: %v", err)
-				return
-			}
+				if err := limiter.Wait(ctx); err != nil {
+					errChan <- fmt.Errorf("rate limit error: %w", err)
+					return
+				}
 
-			deleteBatch := &comatproto.RepoApplyWrites_Input{
-				Repo:   repo, // Include the repository identifier (DID)
-				Writes: []*comatproto.RepoApplyWrites_Input_Writes_Elem{},
-			}
+				deleteBatch := &comatproto.RepoApplyWrites_Input{
+					Repo:   repo,
+					Writes: make([]*comatproto.RepoApplyWrites_Input_Writes_Elem, 0, len(batch)),
+				}
 
-			// Prepare delete instructions for each path in the batch
-			for _, path := range batch {
-				components := strings.Split(path, "/")
-				if len(components) < 2 {
-					log.Printf("Invalid path format: %s", path)
+				for _, path := range batch {
+					components := strings.Split(path, "/")
+					if len(components) < 2 {
+						log.Printf("Invalid path format: %s", path)
+						continue
+					}
+					
+					deleteObj := comatproto.RepoApplyWrites_Delete{
+						Collection: components[0],
+						Rkey:       components[1],
+					}
+
+					deleteBatch.Writes = append(deleteBatch.Writes, &comatproto.RepoApplyWrites_Input_Writes_Elem{
+						RepoApplyWrites_Delete: &deleteObj,
+					})
+				}
+
+				if len(deleteBatch.Writes) == 0 {
 					continue
 				}
-				collection := components[0]
-				rkey := components[1]
 
-				deleteObj := comatproto.RepoApplyWrites_Delete{
-					Collection: collection,
-					Rkey:       rkey,
+				_, err := comatproto.RepoApplyWrites(ctx, &client, deleteBatch)
+				if err != nil {
+					log.Printf("Error applying writes for batch: %v", err)
+					continue
 				}
 
-				deleteBatch.Writes = append(deleteBatch.Writes, &comatproto.RepoApplyWrites_Input_Writes_Elem{
-					RepoApplyWrites_Delete: &deleteObj,
-				})
+				mu.Lock()
+				totalDeleted += len(deleteBatch.Writes)
+				mu.Unlock()
+				
+				log.Printf("Deleted %d records", len(deleteBatch.Writes))
 			}
-
-			// Apply delete instructions
-			_, err := comatproto.RepoApplyWrites(ctx, &client, deleteBatch)
-			if err != nil {
-				log.Printf("Error applying writes for batch: %v", err)
-				return
-			}
-
-			numDeleted += len(deleteBatch.Writes) // Update deleted records count
-			log.Printf("Deleted %d records", len(deleteBatch.Writes))
-		}(batch)
+		}()
 	}
 
-	wg.Wait() // Wait for all goroutines to finish
-	log.Printf("Total deleted records: %d", numDeleted)
-	return nil
+	// Wait for all workers to finish
+	wg.Wait()
+	log.Printf("Total deleted records: %d", totalDeleted)
+	
+	select {
+	case err := <-errChan:
+		return err
+	default:
+		return nil
+	}
 }
 
-// runCleanup orchestrates the overall cleanup process for the specified parameters
-func runCleanup(ctx context.Context, did, appPassword string, cleanupTypes []string, daysAgo int, rateLimit int, burstLimit int) error {
-	// log did
-	log.Println("Starting cleanup...")
-
-	client := xrpc.Client{
+// createClient initializes and authenticates an XRPC client
+func createClient(ctx context.Context, config CleanupConfig) (*xrpc.Client, error) {
+	client := &xrpc.Client{
 		Client: &http.Client{
 			Transport: http.DefaultTransport,
-			Timeout:   5 * time.Minute,
+			Timeout:   clientTimeout,
 		},
-		Host: "https://bsky.social",
+		Host: defaultAPIHost,
 	}
 
-	// Create a session using DID and password
-	out, err := comatproto.ServerCreateSession(ctx, &client, &comatproto.ServerCreateSession_Input{
-		Identifier: did,
-		Password:   appPassword,
+	out, err := comatproto.ServerCreateSession(ctx, client, &comatproto.ServerCreateSession_Input{
+		Identifier: config.DID,
+		Password:   config.AppPassword,
 	})
 	if err != nil {
-		return fmt.Errorf("error logging in: %w", err)
+		return nil, fmt.Errorf("error logging in: %w", err)
 	}
 
-	// Set authentication info on the client
 	client.Auth = &xrpc.AuthInfo{
 		Did:        out.Did,
 		Handle:     out.Handle,
@@ -215,151 +248,135 @@ func runCleanup(ctx context.Context, did, appPassword string, cleanupTypes []str
 		AccessJwt:  out.AccessJwt,
 	}
 
-	// Parse the DID and look up identity directory
 	didObj, err := syntax.ParseDID(out.Did)
 	if err != nil {
-		return fmt.Errorf("error parsing DID: %w", err)
+		return nil, fmt.Errorf("error parsing DID: %w", err)
 	}
 
 	ident, err := userDirectoryLookup(didObj.String())
 	if err != nil {
-		return fmt.Errorf("error looking up DID: %w", err)
+		return nil, fmt.Errorf("error looking up DID: %w", err)
 	}
 
-	client.Host = ident.PDSEndpoint() // Update the client host to identity's PDS endpoint
+	client.Host = ident.PDSEndpoint()
+	return client, nil
+}
 
-	// Fetch and read the repository data
-	repoBytes, err := comatproto.SyncGetRepo(ctx, &client, didObj.String(), "")
+// getRecordsToDelete identifies records that need to be deleted
+func getRecordsToDelete(ctx context.Context, client *xrpc.Client, userDID string, config CleanupConfig) ([]string, error) {
+	repoBytes, err := comatproto.SyncGetRepo(ctx, client, userDID, "")
 	if err != nil {
-		return fmt.Errorf("error getting repo: %w", err)
+		return nil, fmt.Errorf("error getting repo: %w", err)
 	}
 
 	rr, err := repo.ReadRepoFromCar(ctx, bytes.NewReader(repoBytes))
 	if err != nil {
-		return fmt.Errorf("error reading repo CAR: %w", err)
+		return nil, fmt.Errorf("error reading repo CAR: %w", err)
 	}
 
-	var recordsToDelete []string // Slice to hold paths of records to delete
-	lk := sync.Mutex{}           // Mutex to handle concurrent access to recordsToDelete
+	var recordsToDelete []string
+	var mu sync.Mutex
+	cutoffTime := time.Now().AddDate(0, 0, -config.DaysAgo)
 
-	// Function to check if a slice contains a specific item
-	contains := func(slice []string, item string) bool {
-		for _, a := range slice {
-			if a == item {
-				return true
-			}
-		}
-		return false
-	}
-
-	// In the runCleanup function, replace the existing ForEach with:
 	err = rr.ForEach(ctx, "", func(path string, nodeCid cid.Cid) error {
-		// Skip paths containing "threadgate" or that don't match our target collections
+		// Skip if not target record type or contains threadgate
 		if strings.Contains(path, "threadgate") {
 			return nil
 		}
 
-		// Check if the path is for a record type we want to process
 		if !strings.HasPrefix(path, "app.bsky.feed.") && !strings.HasPrefix(path, "app.bsky.graph.block") {
 			return nil
 		}
 
-		// Get the record for the current path
+		// Get record content
 		_, rec, err := rr.GetRecord(ctx, path)
 		if err != nil {
 			log.Printf("Error getting record for path %s: %v", path, err)
-			return fmt.Errorf("error getting record for path %s: %w", path, err)
+			return nil // Skip this record but continue processing
 		}
 
-		// Parse the creation date of the record
+		// Parse creation date
 		createdAt, err := parseRecordCreatedAt(rec)
 		if err != nil {
 			log.Printf("Error parsing record createdAt for path %s: %v", path, err)
-			return fmt.Errorf("error parsing createdAt for record at path %s: %w", path, err)
+			return nil // Skip this record but continue processing
 		}
 
-		// Skip records that are newer than the specified days ago
-		if createdAt.After(time.Now().AddDate(0, 0, -daysAgo)) {
+		// Skip if newer than cutoff
+		if createdAt.After(cutoffTime) {
 			return nil
 		}
 
-		// Check if record type matches the specified cleanup types
-		isEligible := false
+		// Check if record type matches cleanup types
+		var isEligible bool
 		switch rec.(type) {
 		case *bsky.FeedPost:
-			if contains(cleanupTypes, "post") {
-				isEligible = true
-			}
+			isEligible = contains(config.Types, string(Post))
 		case *bsky.FeedRepost:
-			if contains(cleanupTypes, "repost") {
-				isEligible = true
-			}
+			isEligible = contains(config.Types, string(Repost))
 		case *bsky.FeedLike:
-			if contains(cleanupTypes, "like") {
-				isEligible = true
-			}
+			isEligible = contains(config.Types, string(Like))
 		case *bsky.GraphBlock:
-			if contains(cleanupTypes, "block") {
-				isEligible = true
-			}
+			isEligible = contains(config.Types, string(Block))
 		}
 
-		// If eligible, add the path to recordsToDelete
 		if isEligible {
-			lk.Lock()
+			mu.Lock()
 			recordsToDelete = append(recordsToDelete, path)
-			lk.Unlock()
+			mu.Unlock()
 		}
 
 		return nil
 	})
+
 	if err != nil {
-		return fmt.Errorf("error iterating over records: %w", err)
+		return nil, fmt.Errorf("error iterating over records: %w", err)
 	}
 
-	log.Printf("Found %d records to delete.", len(recordsToDelete))
+	return recordsToDelete, nil
+}
 
-	// Delete the identified records
-	err = deleteRecords(ctx, client, out.Did, recordsToDelete, rateLimit, burstLimit)
+// contains checks if a slice contains a specific string
+func contains(slice []string, item string) bool {
+	for _, a := range slice {
+		if a == item {
+			return true
+		}
+	}
+	return false
+}
+
+// runCleanup orchestrates the overall cleanup process
+func runCleanup(ctx context.Context, config CleanupConfig) error {
+	log.Println("Starting cleanup...")
+
+	// Create and authenticate client
+	client, err := createClient(ctx, config)
+	if err != nil {
+		return err
+	}
+
+	// Find records to delete
+	recordsToDelete, err := getRecordsToDelete(ctx, client, client.Auth.Did, config)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("Found %d records to delete", len(recordsToDelete))
+
+	// Delete identified records
+	err = deleteRecords(ctx, *client, client.Auth.Did, recordsToDelete, config.RateLimit, config.BurstLimit)
 	if err != nil {
 		return fmt.Errorf("error during record deletion: %w", err)
 	}
 
-	log.Println("Deletion process completed.")
-
+	log.Println("Deletion process completed successfully")
 	return nil
 }
 
-// main function sets up CLI app and starts cleanup based on user inputs
 func main() {
-	var did, appPassword, cleanupTypes string
-	var daysAgo, rateLimit, burstLimit int
-
-	// versioning
-	cli.VersionFlag = &cli.BoolFlag{
-		Name:    "version",
-		Aliases: []string{"v"},
-		Usage:   "print app version",
-	}
-
-	// help
-	cli.AppHelpTemplate = `NAME:
-	{{.Name}} - {{.Usage}}
-
-VERSION:
-	{{.Version}}
-
-USAGE:
-	{{.HelpName}} [optional options]
-
-OPTIONS:
-{{range .VisibleFlags}}	{{.}}{{ "\n" }}{{end}}	
-`
-	cli.HelpFlag = &cli.BoolFlag{
-		Name:    "help",
-		Aliases: []string{"h"},
-		Usage:   "show help",
-	}
+	var config CleanupConfig
+	var cleanupTypes string
 
 	app := &cli.App{
 		Name:    "at-cleanup",
@@ -368,15 +385,15 @@ OPTIONS:
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:        "did",
-				Usage:       "The DID (decentralized identifier) of the user. (https://docs.bsky.app/docs/advanced-guides/resolving-identities)",
+				Usage:       "The DID (decentralized identifier) of the user",
 				Required:    true,
-				Destination: &did,
+				Destination: &config.DID,
 			},
 			&cli.StringFlag{
 				Name:        "password",
-				Usage:       "The application password. (https://bsky.app/settings/app-passwords)",
+				Usage:       "The application password (create at bsky.app/settings/app-passwords)",
 				Required:    true,
-				Destination: &appPassword,
+				Destination: &config.AppPassword,
 			},
 			&cli.StringFlag{
 				Name:        "types",
@@ -388,28 +405,27 @@ OPTIONS:
 				Name:        "days",
 				Value:       30,
 				Usage:       "Delete records older than this many days",
-				Destination: &daysAgo,
+				Destination: &config.DaysAgo,
 			},
 			&cli.IntFlag{
 				Name:        "rate-limit",
 				Value:       4,
-				Usage:       "Rate limiter speed",
-				Destination: &rateLimit,
+				Usage:       "Rate limiter speed (requests per second)",
+				Destination: &config.RateLimit,
 			},
 			&cli.IntFlag{
 				Name:        "burst-limit",
 				Value:       1,
-				Usage:       "Burst limit for rate limiter",
-				Destination: &burstLimit,
+				Usage:       "Burst limit for rate limiter (concurrent workers)",
+				Destination: &config.BurstLimit,
 			},
 		},
 		Action: func(c *cli.Context) error {
-			// Execute cleanup with specified flags
-			return runCleanup(context.Background(), did, appPassword, strings.Split(cleanupTypes, ","), daysAgo, rateLimit, burstLimit)
+			config.Types = strings.Split(cleanupTypes, ",")
+			return runCleanup(c.Context, config)
 		},
 	}
 
-	// Run the CLI app
 	err := app.Run(os.Args)
 	if err != nil {
 		log.Fatalf("Application error: %v", err)

@@ -21,6 +21,7 @@ coverage.txt
 .env
 env/*.env
 !env/*.env.example
+serve.json
 
 # Docker data volumes
 data/

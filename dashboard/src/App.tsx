@@ -264,13 +264,13 @@ export default function App() {
         {/* Job Status */}
         <div className="pt-6 border-t border-gray-800 space-y-4">
           <h2 className="text-xl font-semibold text-center">Job Status</h2>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap justify-center items-center gap-2">
             <input
               type="text"
               placeholder="Existing Job ID"
               value={jobId}
               onChange={e => setJobId(e.target.value)}
-              className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 placeholder-gray-500 font-mono text-sm focus:outline-none focus:border-indigo-500 transition-colors"
+              className="flex-2 sm:flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 placeholder-gray-500 font-mono text-sm focus:outline-none focus:border-indigo-500 transition-colors w-full sm:w-auto"
             />
             <button
               onClick={handleCheckStatus}

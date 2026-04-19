@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: atproto-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: bsky
+      POSTGRES_USER: bsky
+      POSTGRES_PASSWORD: bsky
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql
+    networks:
+      - bsky
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bsky"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  search:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - GIT_COMMIT=${GIT_COMMIT:-unknown}
+        - BUILD_TIME=${BUILD_TIME:-unknown}
+    container_name: atproto-search
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - env/search.env
+    ports:
+      - "8080:8080"
+    networks:
+      - bsky
+
+networks:
+  bsky:
+    driver: bridge

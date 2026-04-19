@@ -11,7 +11,7 @@ services:
       - TS_AUTHKEY=${TS_AUTHKEY}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_SOCKET=/var/run/tailscale/tailscaled.sock
-      - TS_SERVE_CONFIG=/config/serve.at-cleanup.json
+      - TS_SERVE_CONFIG=/config/serve.json
       - TS_TAILSCALED_EXTRA_ARGS=--port=0
       - TS_AUTH_ONCE=true
       - TS_ENABLE_HEALTH_CHECK=true
@@ -60,6 +60,8 @@ services:
         - GIT_COMMIT=${GIT_COMMIT:-unknown}
         - BUILD_TIME=${BUILD_TIME:-unknown}
     restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgres://bsky:${POSTGRES_PASSWORD}@postgres:5432/bsky?sslmode=disable
     networks:
       bsky:
         aliases:

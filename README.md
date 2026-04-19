@@ -9,9 +9,6 @@ Connects to your Bluesky PDS, scans your repo for records matching your criteria
 ## Running
 
 ```bash
-# Copy and fill in your env file
-cp env/search.env.example env/search.env
-
 # Start (Postgres + service)
 docker compose up -d
 ```

@@ -1,48 +1,90 @@
-# AT Cleanup
+# bsky-repo-cleanup
 
-Script to remove content from Bluesky (AT Network).
+HTTP service for cleaning up old Bluesky posts, reposts, and likes from your account.
 
-Directly taken from [Jaz's](https://bsky.app/profile/jaz.bsky.social) [bsky-experiments](https://github.com/ericvolp12/bsky-experiments).
+## What it does
 
-## Install
+Connects to your Bluesky PDS, scans your repo for records matching your criteria (age, type), and deletes them in batches — respecting rate limits (4,000/hour, 30,000/day). Jobs run in the background and persist across restarts via Postgres.
 
-There are 3 ways to run the script:
+## Running
 
-### Gorun
-```sh
-make run
-# script should run from root of repo
-./atCleanup.go
+```bash
+# Copy and fill in your env file
+cp env/search.env.example env/search.env
+
+# Start (Postgres + service)
+docker compose up -d
 ```
 
-### Local Binary
-```sh
-make build
-# binary should be accessible from root of repo
-./atCleanup
+The API is available at `http://localhost:8080`.
+
+## API
+
+### Start a cleanup job
+
+```bash
+POST /repo/cleanup
+Content-Type: application/json
+
+{
+  "identifier": "you.bsky.social",      # handle, DID, or email
+  "app_password": "xxxx-xxxx-xxxx-xxxx",
+  "cleanup_types": ["post", "repost", "like", "post_with_media"],
+  "delete_until_days_ago": 30,
+  "actually_delete_stuff": false         # set true to actually delete
+}
 ```
 
-### GOPATH Binary
-```sh
-make install
-# binary should be accessible from anywhere
-atCleanup
+`actually_delete_stuff: false` is a dry run — returns the count of records that would be deleted without touching anything.
+
+### Check job status
+
+```bash
+GET /repo/cleanup?job_id=<id>
+GET /repo/cleanup?did=<did>      # list all jobs for a DID
 ```
 
-## Usage
+### Cancel a job
 
-
-```sh
-atCleanup --did=<DID> --password=<APP_PASS> --types=post,repost,like --days=30 --rate-limit=4 --burst-limit=1
+```bash
+DELETE /repo/cleanup?job_id=<id>
 ```
 
-### Flags
-* `--did`: This is the Decentralized Identifier of the user. ([Documentation](https://docs.bsky.app/docs/advanced-guides/resolving-identities))
-* `--password`: The application password associated with the user's account. ([Create an app password here](https://bsky.app/settings/app-passwords))
-* `--types`: A comma-separated list of record types you want to clean up.
-  * `post`
-  * `repost`
-  * `like`
-* `--days`: The number of days beyond which records should be considered for deletion.
-* `--rate-limit`: The rate at which requests to delete records are sent. The default value here is 4, which corresponds to 4 requests per second.
-* `--burst-limit`: The maximum burst of requests sent at once.
+### Aggregate stats
+
+```bash
+GET /repo/cleanup/stats
+```
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LISTEN_ADDRESS` | `:8080` | HTTP server bind address |
+| `DATABASE_URL` | `postgres://bsky:bsky@postgres:5432/bsky?sslmode=disable` | Postgres connection string |
+| `TOKEN_ENCRYPTION_KEY` | | Hex-encoded 32-byte AES-256 key for encrypting refresh tokens at rest. Generate with `openssl rand -hex 32`. |
+| `MAGIC_HEADER_VAL` | | Optional rate-limit bypass header for the Bluesky PDS |
+| `DEBUG` | `false` | Enable debug logging |
+
+## Project structure
+
+```
+cmd/search/         # service entrypoint
+pkg/
+  endpoints/        # HTTP handlers (repocleanup.go)
+  store/            # Postgres client + cleanup job queries
+telemetry/          # structured JSON logging
+version/            # build version info
+Dockerfile          # multi-stage build (Go 1.24 / Alpine 3.21)
+docker-compose.yml  # Postgres + service
+env/
+  search.env.example
+```
+
+The schema (`repo_cleanup_jobs` table) is created automatically on first startup — no separate migration step needed.
+
+## Dependencies
+
+- [echo](https://github.com/labstack/echo) — HTTP framework
+- [pgx](https://github.com/jackc/pgx) — Postgres driver
+- [indigo](https://github.com/bluesky-social/indigo) — ATProto client

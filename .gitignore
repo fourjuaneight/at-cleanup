@@ -1,4 +1,37 @@
-pb_data
-migrations
+# Binaries
+./search
+migrate
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Build output
+dist/
+bin/
+
+# Go
+*.test
+*.out
+coverage.html
+coverage.txt
+
+# Environment / secrets
 .env
-atCleanup
+env/*.env
+!env/*.env.example
+
+# Docker data volumes
+data/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Node (dashboard remnants)
+*node_modules/

@@ -17,39 +17,39 @@ const STATE_COLORS: Record<string, string> = {
 }
 
 export default function App() {
-  const [identifier, setIdentifier] = useState('')
-  const [appPassword, setAppPassword] = useState('')
+  const [identifier, setIdentifier] = useState<string>('')
+  const [appPassword, setAppPassword] = useState<string>('')
   const [cleanupTypes, setCleanupTypes] = useState<CleanupType[]>([
     'post', 'repost',
   ])
-  const [daysAgo, setDaysAgo] = useState('20')
+  const [daysAgo, setDaysAgo] = useState<string>('20')
 
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState<boolean>(false)
   const [previewResult, setPreviewResult] = useState<api.CleanupResult | null>(null)
   const [submitResult, setSubmitResult] = useState<api.CleanupResult | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
 
-  const [jobId, setJobId] = useState('')
+  const [jobId, setJobId] = useState<string>('')
   const [jobStatus, setJobStatus] = useState<api.JobStatus | null>(null)
-  const [statusLoading, setStatusLoading] = useState(false)
-  const [cancelLoading, setCancelLoading] = useState(false)
+  const [statusLoading, setStatusLoading] = useState<boolean>(false)
+  const [cancelLoading, setCancelLoading] = useState<boolean>(false)
   const [statusError, setStatusError] = useState<string | null>(null)
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const toggleType = (type: CleanupType) => {
+  const toggleType = (type: CleanupType): void => {
     setCleanupTypes(prev =>
       prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type],
     )
   }
 
-  const clearResults = () => {
+  const clearResults = (): void => {
     setFormError(null)
     setPreviewResult(null)
     setSubmitResult(null)
   }
 
-  const handlePreview = async () => {
+  const handlePreview = async (): Promise<void> => {
     clearResults()
     setLoading(true)
     try {
@@ -68,7 +68,7 @@ export default function App() {
     }
   }
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (): Promise<void> => {
     clearResults()
     setLoading(true)
     try {
@@ -91,7 +91,7 @@ export default function App() {
     }
   }
 
-  const fetchStatus = async (id: string) => {
+  const fetchStatus = async (id: string): Promise<void> => {
     setStatusLoading(true)
     setStatusError(null)
     try {
@@ -104,9 +104,9 @@ export default function App() {
     }
   }
 
-  const handleCheckStatus = () => { if (jobId) fetchStatus(jobId) }
+  const handleCheckStatus = (): void => { if (jobId) fetchStatus(jobId) }
 
-  const handleCancel = async () => {
+  const handleCancel = async (): Promise<void> => {
     if (!jobId) return
     setCancelLoading(true)
     setStatusError(null)

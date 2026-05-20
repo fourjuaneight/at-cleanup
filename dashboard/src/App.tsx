@@ -20,7 +20,7 @@ export default function App() {
   const [identifier, setIdentifier] = useState('')
   const [appPassword, setAppPassword] = useState('')
   const [cleanupTypes, setCleanupTypes] = useState<CleanupType[]>([
-    'post', 'post_with_media', 'repost', 'like',
+    'post', 'repost',
   ])
   const [daysAgo, setDaysAgo] = useState(30)
 

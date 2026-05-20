@@ -128,7 +128,7 @@ export default function App() {
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [jobStatus?.job_state, jobId])
 
-  const formDisabled = loading || !identifier || !appPassword || cleanupTypes.length === 0
+  const formDisabled = loading || !identifier || !appPassword || cleanupTypes.length === 0 || daysAgo === ''
 
   return (
     <div className="min-h-screen bg-white text-gray-900 dark:bg-gray-950 dark:text-white flex flex-col items-center py-12 px-4">

@@ -22,7 +22,7 @@ export default function App() {
   const [cleanupTypes, setCleanupTypes] = useState<CleanupType[]>([
     'post', 'repost',
   ])
-  const [daysAgo, setDaysAgo] = useState(30)
+  const [daysAgo, setDaysAgo] = useState('20')
 
   const [loading, setLoading] = useState(false)
   const [previewResult, setPreviewResult] = useState<api.CleanupResult | null>(null)
@@ -57,7 +57,7 @@ export default function App() {
         identifier,
         app_password: appPassword,
         cleanup_types: cleanupTypes,
-        delete_until_days_ago: daysAgo,
+        delete_until_days_ago: Number(daysAgo) || 0,
         actually_delete_stuff: false,
       })
       setPreviewResult(result)
@@ -76,7 +76,7 @@ export default function App() {
         identifier,
         app_password: appPassword,
         cleanup_types: cleanupTypes,
-        delete_until_days_ago: daysAgo,
+        delete_until_days_ago: Number(daysAgo) || 0,
         actually_delete_stuff: true,
       })
       setSubmitResult(result)
@@ -199,7 +199,7 @@ export default function App() {
             type="number"
             min={1}
             value={daysAgo}
-            onChange={e => setDaysAgo(Math.max(1, Number(e.target.value)))}
+            onChange={e => setDaysAgo(e.target.value)}
             className="w-20 bg-gray-100 border border-gray-300 dark:bg-gray-800 dark:border-gray-700 rounded-lg px-3 py-1.5 text-center focus:outline-none focus:border-indigo-500 transition-colors"
           />
           <span className="font-semibold">days</span>

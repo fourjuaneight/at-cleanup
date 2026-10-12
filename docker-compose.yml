@@ -45,7 +45,7 @@ services:
       POSTGRES_USER: bsky
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - ./data/postgres:/var/lib/postgresql
+      - postgres-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U bsky"]
       interval: 5s
@@ -72,9 +72,15 @@ services:
       postgres:
         condition: service_healthy
 
+# Data lives on the Mac's Turko drive. If the folder is missing (drive not mounted), the
+# volume fails to mount and the container won't start, instead of starting on an empty folder.
 volumes:
+  postgres-data:
+    name: at-cleanup_postgres-data
+    driver_opts: {type: none, o: bind, device: /Volumes/Turko/Docker/at-cleanup/postgres}
   tailscale-state:
     name: at-cleanup_tailscale-state
+    driver_opts: {type: none, o: bind, device: /Volumes/Turko/Docker/at-cleanup/tailscale}
   tailscale-sock:
     name: at-cleanup_tailscale-sock
 
